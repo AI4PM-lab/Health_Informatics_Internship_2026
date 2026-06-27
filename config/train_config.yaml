@@ -22,8 +22,8 @@ training:
   loss: "dice_focal"
   #lr: 0.0001
   lr: 0.0003
-  # weight_decay: 0.01
-  weight_decay: 0.00001
+  weight_decay: 0.01
+  # weight_decay: 0.00001
   max_iterations: 16000
   eval_num: 500
   accumulation_steps: 2

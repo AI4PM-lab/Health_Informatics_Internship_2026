@@ -106,3 +106,57 @@ def get_files_from_csv(input_dir, csv_path, fold_idx):
     write_skipped_files_report(skipped_files, fold_idx)
     print(f"Loaded {len(train_files)} training scans and {len(val_files)} validation scans for Fold {fold_idx}.")
     return train_files, val_files
+
+
+def get_training_files_from_csv(input_dir, csv_path, train_folds):
+    input_dir = resolve_data_root(input_dir)
+    print(f"Using data root: {input_dir}")
+    print(f"Using split CSV: {csv_path}")
+
+    train_folds = {int(fold) for fold in train_folds}
+    if not train_folds:
+        raise ValueError("train_folds must contain at least one fold.")
+    if any(fold < 0 for fold in train_folds):
+        raise ValueError("train_folds must be non-negative; negative folds are reserved for testing.")
+
+    df = pd.read_csv(csv_path)
+    train_files = []
+    skipped_files = []
+
+    for _, row in df.iterrows():
+        patient_id = str(row["patient_id"])
+        current_fold = int(row["fold"])
+
+        if current_fold not in train_folds:
+            continue
+
+        img_path = input_dir / patient_id / "CT_LATE.nii.gz"
+        lbl_path = input_dir / patient_id / "registration_mask.nii.gz"
+
+        image_ok, image_reason = is_valid_nifti_path(img_path)
+        label_ok, label_reason = is_valid_nifti_path(lbl_path)
+        if not image_ok or not label_ok:
+            reasons = []
+            if not image_ok:
+                reasons.append(f"image_{image_reason}")
+            if not label_ok:
+                reasons.append(f"label_{label_reason}")
+            skipped_files.append(
+                {
+                    "patient_id": patient_id,
+                    "fold": current_fold,
+                    "reason": ";".join(reasons),
+                    "image": str(img_path),
+                    "label": str(lbl_path),
+                }
+            )
+            continue
+
+        train_files.append({"image": str(img_path), "label": str(lbl_path)})
+
+    write_skipped_files_report(skipped_files, "full_train")
+    print(
+        "Loaded "
+        f"{len(train_files)} full-training scans from folds {sorted(train_folds)}."
+    )
+    return train_files

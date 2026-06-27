@@ -28,7 +28,7 @@ from monai.transforms import AsDiscrete
 
 from lems_ct.src.models.model import get_segresnet
 from lems_ct.src.utils.transforms import get_transforms
-from lems_ct.src.utils.data import get_files_from_csv
+from lems_ct.src.utils.data import get_files_from_csv, get_training_files_from_csv
 from lems_ct.src.metrics.utils import calculate_dice_split, calculate_distance
 from scripts.lcc_postprocessing import lcc_one_hot_after_argmax
 
@@ -70,6 +70,27 @@ def concat_all_gather(tensor):
     tensors_gather = [torch.ones_like(tensor) for _ in range(dist.get_world_size())]
     dist.all_gather(tensors_gather, tensor, async_op=False)
     return torch.cat(tensors_gather, dim=0)
+
+
+def _model_state_dict(model):
+    return model.module.state_dict() if hasattr(model, "module") else model.state_dict()
+
+
+def save_full_training_checkpoint(model, ema_model, optimizer, scaler, global_step, out_dir):
+    checkpoint_data = {
+        "step": global_step,
+        "model_state_dict": _model_state_dict(model),
+        "ema_model_state_dict": _model_state_dict(ema_model) if ema_model else None,
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scaler_state_dict": scaler.state_dict(),
+        "best_dice": None,
+        "full_train": True,
+    }
+    latest_path = os.path.join(out_dir, "latest_checkpoint.pth")
+    best_path = os.path.join(out_dir, "best_metric_model.pth")
+    torch.save(checkpoint_data, latest_path)
+    torch.save(checkpoint_data, best_path)
+    print(f"Saved full-training checkpoints: {latest_path} and {best_path}", flush=True)
 
 
 # ==========================================
@@ -300,9 +321,11 @@ def train_epoch_ddp(
             )
 
         # Validation
-        if (
-            global_step % cfg.training.eval_num == 0 and global_step != 0
-        ) or global_step == cfg.training.max_iterations:
+        should_validate = not args.full_train and (
+            (global_step % cfg.training.eval_num == 0 and global_step != 0)
+            or global_step == cfg.training.max_iterations
+        )
+        if should_validate:
             # Use EMA model for evaluation if available
             eval_target_model = ema_model if ema_model is not None else model
 
@@ -411,14 +434,34 @@ def main(args, cfg):
     device = torch.device(f"cuda:{local_rank}")
     set_determinism(cfg.misc.seed)
 
-    out_dir = Path(args.output_model) / f"fold_{args.fold}"
+    output_fold = args.output_fold if args.output_fold is not None else args.fold
+    out_dir = Path(args.output_model) / f"fold_{output_fold}"
     if global_rank == 0:
         out_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Saving models for Fold {args.fold} to: {out_dir}", flush=True)
+        if args.full_train:
+            print(f"Saving full-training model to: {out_dir}", flush=True)
+        else:
+            print(f"Saving models for Fold {args.fold} to: {out_dir}", flush=True)
 
-    train_files, val_files = get_files_from_csv(
-        args.input_data, args.split_csv, args.fold
-    )
+    if args.full_train:
+        train_files = get_training_files_from_csv(
+            args.input_data, args.split_csv, args.train_folds
+        )
+        val_files = []
+    else:
+        train_files, val_files = get_files_from_csv(
+            args.input_data, args.split_csv, args.fold
+        )
+    if not train_files:
+        raise SystemExit(
+            "ERROR: No training scans found. Expected patient folders containing "
+            "CT_LATE.nii.gz and registration_mask.nii.gz."
+        )
+    if not args.full_train and not val_files:
+        raise SystemExit(
+            "ERROR: No validation scans found. Expected patient folders containing "
+            "CT_LATE.nii.gz and registration_mask.nii.gz."
+        )
     train_transforms, val_transforms = get_transforms(**cfg.transforms)
 
     cache_dir = Path(f"./monai_cache_rank_{local_rank}_fold_{args.fold}")
@@ -427,13 +470,13 @@ def main(args, cfg):
     train_ds = PersistentDataset(
         data=train_files, transform=train_transforms, cache_dir=cache_dir
     )
-    val_ds = PersistentDataset(
+    val_ds = None if args.full_train else PersistentDataset(
         data=val_files, transform=val_transforms, cache_dir=cache_dir
     )
 
     # 1. Samplers
     train_sampler = DistributedSampler(train_ds, shuffle=True)
-    val_sampler = DistributedSampler(val_ds, shuffle=False)
+    val_sampler = None if val_ds is None else DistributedSampler(val_ds, shuffle=False)
 
     train_loader = DataLoader(
         train_ds,
@@ -443,7 +486,7 @@ def main(args, cfg):
         pin_memory=True,
         sampler=train_sampler,
     )
-    val_loader = DataLoader(
+    val_loader = None if val_ds is None else DataLoader(
         val_ds,
         batch_size=1,
         shuffle=False,
@@ -547,6 +590,11 @@ def main(args, cfg):
         )
         epochs_completed += 1
 
+    if args.full_train and global_rank == 0:
+        save_full_training_checkpoint(
+            model, ema_model, optimizer, scaler, global_step, out_dir
+        )
+    dist.barrier()
     dist.destroy_process_group()
 
 
@@ -556,6 +604,9 @@ if __name__ == "__main__":
     parser.add_argument("--output_model", type=str, required=True)
     parser.add_argument("--split_csv", type=str, default="data/cv_splits_qc.csv")
     parser.add_argument("--fold", type=int, required=True)
+    parser.add_argument("--full_train", action="store_true")
+    parser.add_argument("--train_folds", nargs="+", type=int, default=[0, 1, 2, 3, 4])
+    parser.add_argument("--output_fold", type=int, default=None)
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--config", type=str, default="config/train_config.yaml")

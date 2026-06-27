@@ -56,6 +56,7 @@ dependency_stubs = {
     "lems_ct.src.utils.data": stub_module(
         "lems_ct.src.utils.data",
         get_files_from_csv=lambda *args, **kwargs: ([], []),
+        get_training_files_from_csv=lambda *args, **kwargs: [],
         resolve_data_root=lambda path: path,
         resolve_local_path=lambda path: path,
     ),
@@ -93,6 +94,54 @@ class SelectDeviceTests(unittest.TestCase):
 
         self.assertEqual(device, torch.device("cuda:2"))
         set_device.assert_called_once_with(2)
+
+
+class FakeDevice:
+    def __init__(self, device_type):
+        self.type = device_type
+
+
+class FakeTensor:
+    def __init__(self, device_type):
+        self.shape = (1, 1, 4, 4, 4)
+        self.device = FakeDevice(device_type)
+
+    def float(self):
+        return self
+
+    def cpu(self):
+        return FakeTensor("cpu")
+
+
+class FakeLossValue:
+    def __init__(self):
+        self.to_device = None
+
+    def __rmul__(self, _other):
+        return self
+
+    def to(self, device):
+        self.to_device = device
+        return self
+
+
+class HausdorffLossDeviceTests(unittest.TestCase):
+    def test_hausdorff_distance_transform_runs_on_cpu_for_cuda_inputs(self):
+        observed_devices = []
+
+        class RecordingHausdorffLoss:
+            def __init__(self, **_kwargs):
+                pass
+
+            def __call__(self, input_tensor, target_tensor):
+                observed_devices.append((input_tensor.device.type, target_tensor.device.type))
+                return FakeLossValue()
+
+        with mock.patch.object(train_job, "HausdorffDTLoss", RecordingHausdorffLoss):
+            loss = train_job.DownsampledHausdorffDTLoss(downsample_factor=1)
+            loss(FakeTensor("cuda"), FakeTensor("cuda"))
+
+        self.assertEqual(observed_devices, [("cpu", "cpu")])
 
 
 if __name__ == "__main__":

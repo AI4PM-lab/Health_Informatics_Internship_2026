@@ -9,7 +9,6 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import torch
 from monai.data import DataLoader, Dataset, MetaTensor, decollate_batch
 from monai.inferers import sliding_window_inference
@@ -135,11 +134,16 @@ def collect_checkpoint_paths(checkpoints_root, fold_count):
 
 def select_cases_from_split(input_dir, split_csv, test_fold=-1, case_name=None):
     input_dir = resolve_data_root(input_dir)
-    df = pd.read_csv(split_csv)
-    test_rows = df[df["fold"].astype(int) == int(test_fold)]
+    with Path(split_csv).open(newline="") as file_obj:
+        test_rows = [
+            row
+            for row in csv.DictReader(file_obj)
+            if int(row["fold"]) == int(test_fold)
+        ]
 
     cases = []
-    for patient_id in test_rows["patient_id"].astype(str):
+    for row in test_rows:
+        patient_id = str(row["patient_id"])
         if case_name and patient_id != case_name:
             continue
 

@@ -40,7 +40,12 @@ from monai.transforms import AsDiscrete
 
 from lems_ct.src.models.model import get_segresnet
 from lems_ct.src.utils.transforms import get_transforms
-from lems_ct.src.utils.data import get_files_from_csv, resolve_data_root, resolve_local_path
+from lems_ct.src.utils.data import (
+    get_files_from_csv,
+    get_training_files_from_csv,
+    resolve_data_root,
+    resolve_local_path,
+)
 from lems_ct.src.utils.misc import (
     update_ema_variables,
     exp_lr_scheduler_with_warmup,
@@ -69,6 +74,34 @@ def load_model_state(model, state_dict):
 
 def inference_model(model):
     return model.module if hasattr(model, "module") else model
+
+
+def save_full_training_checkpoint(
+    model,
+    ema_model,
+    optimizer,
+    scaler,
+    global_step,
+    out_dir,
+    loss_name,
+    validation_loss_name,
+):
+    checkpoint_data = {
+        "step": global_step,
+        "model_state_dict": get_model_state(model),
+        "ema_model_state_dict": get_model_state(ema_model) if ema_model else None,
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scaler_state_dict": scaler.state_dict(),
+        "best_dice": None,
+        "loss_name": loss_name,
+        "validation_loss_name": validation_loss_name,
+        "full_train": True,
+    }
+    latest_path = os.path.join(out_dir, "latest_checkpoint.pth")
+    best_path = os.path.join(out_dir, "best_metric_model.pth")
+    torch.save(checkpoint_data, latest_path)
+    torch.save(checkpoint_data, best_path)
+    print(f"Saved full-training checkpoints: {latest_path} and {best_path}", flush=True)
 
 
 def autocast_context(device):
@@ -198,6 +231,8 @@ def canonical_loss_name(loss_name):
         "hausdorff": "hausdorff",
         "haussdorf": "hausdorff",
         "hausdorff_dt": "hausdorff",
+        "surface_hausdorff": "hausdorff",
+        "surface_hausdorff_dt": "hausdorff",
         "tversky": "tversky",
     }
     normalized = str(loss_name).lower().replace("-", "_")
@@ -245,16 +280,17 @@ class DownsampledHausdorffDTLoss(nn.Module):
 
         hausdorff_input = hausdorff_input.float()
         hausdorff_device = hausdorff_input.device
-        if hausdorff_device.type == "mps":
-            # MONAI's distance transform creates float64 tensors, which MPS does not support.
-            # Keep the model on MPS, but compute the distance-transform part on CPU.
+        if hausdorff_device.type in {"cuda", "mps"}:
+            # Keep model training on the accelerator, but run MONAI's distance
+            # transform on CPU. The CUDA path can dispatch to CuPy/CuCIM, whose
+            # binary compatibility depends on the cluster CUDA version.
             hausdorff_input = hausdorff_input.cpu()
             hausdorff_target = hausdorff_target.cpu()
 
         loss = self.lambda_hausdorff * self.hausdorff(
             hausdorff_input, hausdorff_target
         )
-        if hausdorff_device.type == "mps":
+        if hausdorff_device.type in {"cuda", "mps"}:
             loss = loss.to(hausdorff_device)
         if self.dice is not None:
             loss = loss + self.lambda_dice * self.dice(input_tensor, target_tensor)
@@ -742,9 +778,10 @@ def train_epoch_ddp(
             )
 
         # Validation Logic - Triggered at specific intervals or at the very end
-        if (
-            step_number % cfg.training.eval_num == 0 and step_number != 0
-        ) or step_number == cfg.training.max_iterations:
+        if val_loader is not None and (
+            (step_number % cfg.training.eval_num == 0 and step_number != 0)
+            or step_number == cfg.training.max_iterations
+        ):
             
             # If we trained an EMA model, we evaluate using its smoothed weights instead of the active model
             eval_target_model = ema_model if ema_model is not None else model
@@ -887,18 +924,35 @@ def main(args, cfg):
     set_determinism(cfg.misc.seed)
 
     # Output directory setup (handled only by global rank 0 to prevent file write collisions across the entire cluster)
-    out_dir = Path(args.output_model) / f"fold_{args.fold}"
+    output_fold = args.output_fold if args.output_fold is not None else args.fold
+    out_dir = Path(args.output_model) / f"fold_{output_fold}"
     if global_rank == 0:
         create_output_dir(out_dir)
-        print(f"Saving models for Fold {args.fold} to: {out_dir}", flush=True)
+        if args.full_train:
+            print(f"Saving full-training model to: {out_dir}", flush=True)
+        else:
+            print(f"Saving models for Fold {args.fold} to: {out_dir}", flush=True)
 
-    train_files, val_files = get_files_from_csv(
-        args.input_data, args.split_csv, args.fold
-    )
-    if not train_files or not val_files:
+    if args.full_train:
+        train_files = get_training_files_from_csv(
+            args.input_data, args.split_csv, args.train_folds
+        )
+        val_files = []
+    else:
+        train_files, val_files = get_files_from_csv(
+            args.input_data, args.split_csv, args.fold
+        )
+    if not train_files:
         expected_root = resolve_data_root(args.input_data)
         raise SystemExit(
-            "ERROR: No training/validation scans found. "
+            "ERROR: No training scans found. "
+            f"Checked: {expected_root}. "
+            "Expected patient folders containing CT_LATE.nii.gz and registration_mask.nii.gz."
+        )
+    if not args.full_train and not val_files:
+        expected_root = resolve_data_root(args.input_data)
+        raise SystemExit(
+            "ERROR: No validation scans found. "
             f"Checked: {expected_root}. "
             "Expected patient folders containing CT_LATE.nii.gz and registration_mask.nii.gz."
         )
@@ -917,14 +971,14 @@ def main(args, cfg):
     train_ds = PersistentDataset(
         data=train_files, transform=train_transforms, cache_dir=cache_dir
     )
-    val_ds = PersistentDataset(
+    val_ds = None if args.full_train else PersistentDataset(
         data=val_files, transform=val_transforms, cache_dir=cache_dir
     )
 
     # 1. Samplers
     # DistributedSampler splits the dataset so each GPU gets a unique subset of the data per epoch.
     train_sampler = DistributedSampler(train_ds, shuffle=True) if distributed else None
-    val_sampler = DistributedSampler(val_ds, shuffle=False) if distributed else None
+    val_sampler = None if val_ds is None else DistributedSampler(val_ds, shuffle=False) if distributed else None
 
     train_loader = DataLoader(
         train_ds,
@@ -935,7 +989,7 @@ def main(args, cfg):
         sampler=train_sampler,
         collate_fn=train_collate_fn
     )
-    val_loader = DataLoader(
+    val_loader = None if val_ds is None else DataLoader(
         val_ds,
         batch_size=cfg.training.val_batch_size,
         shuffle=False,
@@ -1069,6 +1123,18 @@ def main(args, cfg):
         )
         epochs_completed += 1
 
+    if args.full_train and global_rank == 0:
+        save_full_training_checkpoint(
+            model=model,
+            ema_model=ema_model,
+            optimizer=optimizer,
+            scaler=scaler,
+            global_step=global_step,
+            out_dir=out_dir,
+            loss_name=loss_name,
+            validation_loss_name=validation_loss_name,
+        )
+
     # Clean up the DDP process group when training finishes
     if distributed:
         dist.destroy_process_group()
@@ -1081,6 +1147,9 @@ if __name__ == "__main__":
     parser.add_argument("--output_model", type=str, required=True)
     parser.add_argument("--split_csv", type=str, default="cv_splits.csv")
     parser.add_argument("--fold", type=int, required=True)
+    parser.add_argument("--full_train", action="store_true")
+    parser.add_argument("--train_folds", nargs="+", type=int, default=[0, 1, 2, 3, 4])
+    parser.add_argument("--output_fold", type=int, default=None)
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--config", type=str, default="config/train_config.yaml")

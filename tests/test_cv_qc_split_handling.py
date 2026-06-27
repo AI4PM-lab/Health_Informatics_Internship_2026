@@ -37,6 +37,31 @@ class CVQCSplitHandlingTests(unittest.TestCase):
             self.assertEqual(val_patients, {"TAVI_VAL"})
             self.assertNotIn("TAVI_TEST", train_patients | val_patients)
 
+    def test_full_training_uses_nonnegative_folds_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "dataset"
+            split_csv = Path(tmp) / "cv_splits_qc.csv"
+            split_csv.write_text(
+                "patient_id,fold\n"
+                "TAVI_FOLD0,0\n"
+                "TAVI_FOLD4,4\n"
+                "TAVI_TEST,-1\n"
+            )
+
+            for patient_id in ("TAVI_FOLD0", "TAVI_FOLD4", "TAVI_TEST"):
+                write_fake_nifti_gz(root / patient_id / "CT_LATE.nii.gz")
+                write_fake_nifti_gz(root / patient_id / "registration_mask.nii.gz")
+
+            with mock.patch.object(data, "PROJECT_ROOT", Path(tmp)):
+                train_files = data.get_training_files_from_csv(
+                    root, split_csv, train_folds=[0, 1, 2, 3, 4]
+                )
+
+            train_patients = {Path(item["image"]).parent.name for item in train_files}
+
+            self.assertEqual(train_patients, {"TAVI_FOLD0", "TAVI_FOLD4"})
+            self.assertNotIn("TAVI_TEST", train_patients)
+
 
 if __name__ == "__main__":
     unittest.main()
