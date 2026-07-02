@@ -17,7 +17,6 @@ README_INSTALL.md
 *.nii.gz
 *.pth
 /docs
-/tests
 
 # C extensions
 *.so
