@@ -108,6 +108,14 @@ def build_arg_parser():
     parser.add_argument("--output_model", type=str, required=True)
     parser.add_argument("--split_csv", type=str, default="cv_splits.csv")
     parser.add_argument("--fold", type=int, default=0)
+    parser.add_argument("--full_train", action="store_true")
+    parser.add_argument(
+        "--train_folds",
+        nargs="+",
+        type=int,
+        default=[0, 1, 2, 3, 4],
+    )
+    parser.add_argument("--output_fold", type=int, default=None)
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--config", type=str, default="config/train_config.yaml")

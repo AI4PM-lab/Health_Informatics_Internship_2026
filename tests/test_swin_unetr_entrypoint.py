@@ -4,6 +4,35 @@ from scripts import swin_UNETR as swin
 
 
 class SwinUNETREntrypointTests(unittest.TestCase):
+    def test_parser_accepts_full_training_arguments(self):
+        parser = swin.build_arg_parser()
+
+        args = parser.parse_args(
+            [
+                "--input_data",
+                "/data",
+                "--output_model",
+                "/outputs",
+                "--split_csv",
+                "data/cv_splits_qc.csv",
+                "--fold",
+                "0",
+                "--full_train",
+                "--train_folds",
+                "0",
+                "1",
+                "2",
+                "3",
+                "4",
+                "--output_fold",
+                "0",
+            ]
+        )
+
+        self.assertTrue(args.full_train)
+        self.assertEqual(args.train_folds, [0, 1, 2, 3, 4])
+        self.assertEqual(args.output_fold, 0)
+
     def test_applies_swin_defaults_from_roi_size(self):
         model_cfg = {
             "spatial_dims": 3,

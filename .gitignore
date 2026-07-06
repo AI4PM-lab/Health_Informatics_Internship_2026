@@ -5,6 +5,7 @@ __pycache__/
 
 /notebooks/cv_inference_results
 /notebooks/output
+/notebooks/nifti_data/
 /notebooks/outputs
 /outputs
 /sweep_outputs
