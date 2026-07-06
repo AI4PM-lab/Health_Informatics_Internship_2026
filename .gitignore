@@ -5,12 +5,24 @@ __pycache__/
 
 /notebooks/cv_inference_results
 /notebooks/output
+/notebooks/nifti_data/
+/notebooks/outputs
+/outputs
+/sweep_outputs
+data/skipped_invalid_files_fold_*.csv
+mlruns/
+/.claude/
+LEGGIMI.md
+README_INSTALL.md
 *.sif
 *.nii.gz
 *.pth
+/docs
 
 # C extensions
 *.so
+
+outputs-only-dice-1/
 
 # Distribution / packaging
 .Python
@@ -43,6 +55,10 @@ MANIFEST
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
+
+azureml_summaries_ROI_128/
+azureml_summaries_ROI_96/
+weights/
 
 # Unit test / coverage reports
 htmlcov/
@@ -213,3 +229,4 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+azureml_summaries/

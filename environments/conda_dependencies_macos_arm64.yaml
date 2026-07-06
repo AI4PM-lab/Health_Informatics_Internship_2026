@@ -1,0 +1,41 @@
+name: media-env-macos
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip==24.0
+  # PyTorch for macOS (no CUDA)
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pip:
+      - "setuptools<70.0.0"
+      # Azure SDKs for local notebook data access
+      # Note: azureml-fsspec and azureml-core are excluded — they pull in
+      # azureml-dataprep which requires dotnetcore2, unavailable on ARM64.
+      - azure-ai-ml
+      - azure-identity
+      # Explicit conflict resolution
+      - azure-storage-blob==12.19.0
+      # Tracking
+      - azureml-mlflow==1.60.0.post1
+      - mlflow==2.22.2
+      # Medical Imaging & Deep Learning
+      - monai
+      - einops
+      - nibabel
+      - itk
+      - SimpleITK
+      # Data Science stack
+      - numpy
+      - pandas
+      - scipy
+      - scikit-image
+      - matplotlib
+      - nnunetv2
+      - tqdm
+      - psutil
+      - nvidia-ml-py
+      - omegaconf
+      - antlr4-python3-runtime==4.9.3

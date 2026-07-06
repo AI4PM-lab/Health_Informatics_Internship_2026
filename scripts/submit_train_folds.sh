@@ -1,13 +1,19 @@
 #!/bin/bash
+set -euo pipefail
 
-# Loop from 0 to 4
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+JOB_FILE="${PROJECT_ROOT}/jobs/train_job.yml"
+
 for i in {0..4}
 do
   echo "Submitting Fold $i to Azure ML..."
   
-  az ml job create -f train_job.yml \
+  az ml job create --file "$JOB_FILE" \
     --set display_name="Myocardium SegResNet Training - fold $i" \
-    --set inputs.fold=$i
+    --set inputs.fold=$i \
+    --output json \
+    --only-show-errors
     
   echo "Fold $i submitted successfully!"
   echo "--------------------------------"

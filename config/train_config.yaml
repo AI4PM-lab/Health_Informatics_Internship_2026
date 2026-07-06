@@ -19,9 +19,12 @@ transforms:
   rotate_prob: 0.10
 
 training:
-  lr: 0.0001
+  loss: "dice_focal"
+  #lr: 0.0001
+  lr: 0.0003
   weight_decay: 0.01
-  max_iterations: 30000
+  # weight_decay: 0.00001
+  max_iterations: 16000
   eval_num: 500
   accumulation_steps: 2
   use_ema: true
@@ -31,12 +34,22 @@ training:
   train_num_workers: 2
   val_batch_size: 1
   val_num_workers: 2
+  max_validation_batches: 0
 
 
 inference:
   overlap: 0.5
-  mode: "constant"
+  # Gaussian weighting reduces patch-border artefacts during sliding-window inference.
+  mode: "gaussian"
   sw_batch_size: 4
 
 misc:
   seed: 1303
+
+
+# Applied only after prediction discretization, never inside the training loss.
+postprocessing:
+  keep_largest_connected_component: true
+  applied_labels: [1]
+  connectivity: 1
+  num_components: 1
